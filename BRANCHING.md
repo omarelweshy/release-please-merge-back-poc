@@ -84,11 +84,28 @@ Two known gaps:
 |---|---|---|
 | `test.yml` | PR into `test` | Gates on PR alignment, then runs the suite. **Mock.** |
 | `pr-title-lint.yml` | PR into `main` | Conventional-commit title on hotfix PRs. |
+| `pr-body-type.yml` | PR into `test` or `main` | Exactly one type ticked in the body, and it matches the title prefix. |
 | `deploy-production.yml` | PR into `main`, and push to `main` | Previews the payload on the PR; deploys after merge. **Mock.** |
 | `release-please.yml` | Push to `main` | Opens/updates the release PR. |
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
+
+### The type checkbox
+
+`.github/pull_request_template.md` carries a "Type of change" checklist.
+`pr-body-type.yml` requires exactly one box ticked, and requires it to match
+the title prefix.
+
+The checkbox tells the machine nothing the title does not already say — the
+title is what lands on the branch and what release-please parses. It exists for
+the author: ticking `feat` and then typing `chore: …` is the moment you catch a
+change that was about to be left out of the release notes. So the cross-check
+is the feature, not the checkbox.
+
+Backticks around the type are required, and only the section under
+`## Type of change` is read — otherwise a ticked box in some unrelated
+checklist ("- [x] test coverage added") would register as the type `test`.
 
 ### What "aligned" means for a `feature -> test` PR
 

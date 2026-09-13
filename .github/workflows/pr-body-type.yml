@@ -1,0 +1,130 @@
+name: Lint PR Body
+
+# Checks the "Type of change" checklist in the PR body:
+#
+#   1. Exactly one type box is ticked.
+#   2. That type matches the prefix of the PR title.
+#
+# Why both. The title alone is already linted (test.yml for PRs into `test`,
+# pr-title-lint.yml for hotfixes into `main`) and the title alone is what
+# release-please reads. The checkbox adds nothing for the machine -- it is
+# there for the author: ticking `feat` and then writing `chore: ...` is the
+# moment you notice you mislabelled a change that was about to be left out of
+# the release notes. The cross-check is the whole point; a checkbox nobody
+# reconciles against the title is decoration.
+#
+# `sync/*` and `preprod` PRs are exempt. They are merge commits carrying other
+# people's work; they have no single type.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [test, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint-pr-body:
+    name: Validate type checklist
+    if: ${{ !startsWith(github.head_ref, 'sync/') && github.head_ref != 'preprod' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the ticked type against the title
+        env:
+          # Passed through the environment, never interpolated into the script.
+          # A PR body is attacker-controlled text; `${{ ... }}` inside a run
+          # block would splice it straight into the shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -uo pipefail
+
+          # Keep in sync with release-please-config.json -> changelog-sections
+          # and with .github/pull_request_template.md.
+          ALLOWED="feat fix perf revert refactor docs build deps ci test style chore"
+
+          checklist() {
+            echo "Copy this into the PR description and tick one box:"
+            echo
+            echo "## Type of change"
+            echo
+            for t in $ALLOWED; do echo "- [ ] \`$t\`"; done
+          }
+
+          BODY=$(printf '%s\n' "$PR_BODY" | tr -d '\r')
+
+          if [ -z "$(printf '%s' "$BODY" | tr -d '[:space:]')" ]; then
+            echo "::error::The pull request description is empty."
+            checklist
+            exit 1
+          fi
+
+          # Only look inside the "Type of change" section when there is one, so
+          # a ticked box in some unrelated checklist cannot be mistaken for a
+          # type. Falls back to the whole body if the heading is absent.
+          SECTION=$(printf '%s\n' "$BODY" | awk '
+            /^##[[:space:]]*Type of change/ { inside = 1; next }
+            /^##[[:space:]]/               { inside = 0 }
+            inside                          { print }
+          ')
+          [ -z "$SECTION" ] && SECTION="$BODY"
+
+          # Backticks are required. Without them "- [x] test coverage added" in
+          # some other checklist would read as the type `test`.
+          TICKED=$(printf '%s\n' "$SECTION" \
+            | sed -nE 's/^[[:space:]]*[-*][[:space:]]*\[[xX]\][[:space:]]*`([a-z]+)`.*/\1/p' \
+            | sort -u)
+
+          # Drop anything that is not a real type.
+          VALID=""
+          for t in $TICKED; do
+            case " $ALLOWED " in *" $t "*) VALID="$VALID $t" ;; esac
+          done
+          VALID=$(echo $VALID)
+          COUNT=$(printf '%s' "$VALID" | wc -w | tr -d ' ')
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No type is ticked in the PR description."
+            echo "::error::Tick exactly one box, keeping the backticks around the type."
+            checklist
+            exit 1
+          fi
+
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::More than one type is ticked: $VALID"
+            echo "::error::This PR is squashed into a single commit, so it gets exactly one type."
+            echo "::error::If it genuinely does two things, split it into two PRs."
+            exit 1
+          fi
+
+          echo "Ticked type: $VALID"
+
+          # Parse `type(scope)!: subject`.
+          TITLE_TYPE=$(printf '%s' "$PR_TITLE" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?:.*/\1/p')
+
+          if [ -z "$TITLE_TYPE" ]; then
+            # The title lint owns this failure; reporting it twice helps nobody.
+            echo "::notice::The PR title is not a Conventional Commit, so there is nothing to cross-check. See the title lint."
+            exit 0
+          fi
+
+          if [ "$TITLE_TYPE" != "$VALID" ]; then
+            echo "::error::Mismatch: the description says \`$VALID\` but the title says \`$TITLE_TYPE:\`."
+            echo "::error::Title: $PR_TITLE"
+            echo "::error::The title is what lands on the branch and what release-please reads."
+            echo "::error::Fix whichever one is wrong -- they must agree."
+            exit 1
+          fi
+
+          echo "Title and description agree: \`$TITLE_TYPE\`."
+          {
+            echo "### PR type"
+            echo ""
+            echo "\`$TITLE_TYPE\` — title and description agree."
+          } >> "$GITHUB_STEP_SUMMARY"
