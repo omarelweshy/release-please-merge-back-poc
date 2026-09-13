@@ -27,6 +27,13 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      # `release_created` is the per-release flag. Compare it against the string
+      # 'true': GitHub casts the non-empty string "false" to truthy in `if:`,
+      # so a bare truthiness test deploys on every run.
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -52,3 +59,19 @@ jobs:
           else
             echo "No releasable commits on main." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # Deploys ONLY on the run where a version was actually cut -- that is, when
+  # the release PR merged. A plain promotion merge to `main` sets
+  # release_created to false and this is skipped, so production is never
+  # deployed from an untagged commit.
+  #
+  # Called rather than triggered: a release or tag created with GITHUB_TOKEN
+  # does not trigger another workflow, so an `on: release` deploy would never
+  # fire. Same job graph, no recursion guard to fight.
+  deploy-production:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/deploy-production.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+      version: ${{ needs.release-please.outputs.version }}
