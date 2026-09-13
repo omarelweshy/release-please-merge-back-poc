@@ -31,8 +31,34 @@ Set the repository to **use the PR title as the squash commit message**
 (Settings → General → Pull Requests), otherwise GitHub will substitute the
 branch name and release-please will see nothing.
 
-Promotion and sync PR titles are free-form — they become merge commits and are
-never changelog input.
+### Promotion and sync PR titles must NOT be conventional commits
+
+This is not cosmetic, and it is the opposite of the rule above.
+
+When GitHub creates a merge commit it writes `Merge pull request #N from
+owner/branch` as the subject and **puts the PR title in the body**. release-please
+parses the body. So a promotion PR titled `feat: ship the thing` lands on `main`
+as a commit whose body is `feat: ship the thing`, and you get a phantom
+changelog entry — on top of the real entries from the commits the promotion
+actually carried, and possibly a wrong minor bump.
+
+Observed directly in this repo: PR #5 was titled `feat: add health check
+endpoint` and merged with a merge commit. Its merge commit `a26d41d` has a
+non-conventional subject and the body `feat: add health check endpoint`, and
+release-please emitted an entry for it — duplicating the entry from the real
+commit `a0893d8` underneath.
+
+So title promotion and sync PRs in plain prose:
+
+- `Promote test to preprod (2026-09-13)`
+- `Release candidate: preprod to main`
+
+`sync.yml` names its own PRs `sync: <source> -> <target>`, and `sync` is absent
+from `changelog-sections`, so those produce nothing.
+
+The same trap catches feature PRs merged the wrong way: a `feat:`-titled PR
+merged with a merge commit instead of a squash yields two entries for one
+change. Squash at `feature -> test`, always.
 
 ## The flow
 
@@ -84,11 +110,57 @@ Two known gaps:
 |---|---|---|
 | `test.yml` | PR into `test` | Gates on PR alignment, then runs the suite. **Mock.** |
 | `pr-title-lint.yml` | PR into `main` | Conventional-commit title on hotfix PRs. |
-| `deploy-production.yml` | PR into `main`, and push to `main` | Previews the payload on the PR; deploys after merge. **Mock.** |
+| `pr-body-type.yml` | PR into `test` or `main` | Exactly one type ticked in the body, and it matches the title prefix. |
+| `deploy-production-preview.yml` | PR into `main` | Read-only preview of the payload. **Mock.** |
+| `deploy-production.yml` | Called by `release-please.yml` when a release is cut | Deploys the tagged commit. **Mock.** |
 | `release-please.yml` | Push to `main` | Opens/updates the release PR. |
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
+
+### Production deploys only on a cut release
+
+`deploy-production.yml` does not listen for pushes to `main`, and must not.
+`main` is pushed **twice** per release — once when the promotion merges, and
+again when the release PR merges — so a push trigger deploys production from an
+untagged commit before the version bump and changelog exist, then deploys again
+a moment later. That is not a hypothetical; it happened here.
+
+release-please.yml calls it instead, gated on
+`needs.release-please.outputs.release_created == 'true'`, which is true only on
+the run where a version was actually cut. One release, one deploy, of the
+commit carrying the tag.
+
+Compare against the string `'true'`, not truthiness: GitHub casts the
+non-empty string `"false"` to truthy in an `if:`, so a bare test deploys on
+every run.
+
+It is *called* rather than triggered by `on: release` or a tag push because a
+release or tag created with `GITHUB_TOKEN` does not trigger another workflow —
+GitHub's anti-recursion guard. Such a workflow would simply never fire. Running
+in the same job graph avoids the question.
+
+**This gate is only as good as release-please's ability to cut a release.** If
+no tag is being created, `release_created` is never `'true'` and production
+never deploys — silently. Confirm a tag appears on the remote after a release
+PR merges.
+
+### One trigger per workflow
+
+A job skipped by a job-level `if:` still reports a `skipped` check on the pull
+request. Two jobs in one workflow -- one for `pull_request`, one for `push` --
+therefore put a permanently-skipped entry on every PR, which is noise that
+trains people to stop reading the check list.
+
+So: if a job only ever runs for one event, give it its own workflow file and
+put the condition in `on:`, not in `if:`. That is why the production deploy is
+two files.
+
+Job-level `if:` is still right where the condition genuinely varies per PR and
+cannot be expressed as a trigger. `github.head_ref` is the usual case, since
+GitHub has no head-branch filter in `on:` -- which is why the title and body
+lints show as skipped on `preprod -> main` and `sync/*` PRs. That one is not
+fixable by splitting files.
 
 ### What "aligned" means for a `feature -> test` PR
 
