@@ -109,6 +109,7 @@ Two known gaps:
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `test.yml` | PR into `test` | Gates on PR alignment, then runs the suite. **Mock.** |
+| `deploy-feature-env.yml` | PR into `test` | Per-PR feature environment, URL posted as a sticky comment. **Mock.** |
 | `pr-title-lint.yml` | PR into `main` | Conventional-commit title on hotfix PRs. |
 | `pr-body-type.yml` | PR into `test` or `main` | Exactly one type ticked in the body, and it matches the title prefix. |
 | `deploy-production.yml` | Called by `release-please.yml` when a release is cut | Deploys the tagged commit. **Mock.** |
@@ -116,7 +117,31 @@ Two known gaps:
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
+| `deploy-preprod.yml` | Push to `preprod` | Deploys the branch tip. **Mock.** |
 | `promotion-manifest.yml` | PR `test`→`preprod` or `preprod`→`main` | Writes the commits being promoted into the PR body, grouped by type. |
+
+### The three environments
+
+| Environment | Deployed by | When | Gated on a release? |
+|---|---|---|---|
+| feature (`pr-<n>`) | `deploy-feature-env.yml` | PR opened or pushed against `test` | no |
+| preprod | `deploy-preprod.yml` | anything merges to `preprod` | no |
+| production | `deploy-production.yml` | release-please cuts a version | **yes** |
+
+Only production is gated. preprod exists to be the thing you look at *before*
+tagging, so it deploys the branch tip as-is — both the `test -> preprod`
+promotion and a hotfix arriving via `sync/main-to-preprod`, since both change
+what preprod is. The version it reports is `version.txt` plus a commit sha,
+which is deliberately not a release number.
+
+Feature environments are keyed on the pull request number, not the branch name:
+the number is the only identifier that survives a force-push or a rename. The
+URL goes on the PR as a **sticky** comment, updated in place — `synchronize`
+fires on every commit and a fresh comment each time would bury the review.
+
+**Feature environments are never torn down.** That needs a
+`pull_request: [closed]` trigger in its own file, for the reason in "One
+trigger per workflow" below. Until it exists, they accumulate.
 
 ### Nothing production-named runs on a pull request
 

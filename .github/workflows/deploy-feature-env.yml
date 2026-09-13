@@ -1,0 +1,119 @@
+name: Feature environment
+
+# MOCK. Every deploy step is an echo; nothing leaves the runner.
+#
+# Spins up a per-pull-request environment for PRs into `test`, so a feature can
+# be looked at by a human before it is squashed onto the shared branch. Named
+# after the PR number, which is the only identifier that stays stable while the
+# branch is being force-pushed and renamed.
+#
+# Re-runs on `synchronize` so the environment tracks the branch rather than
+# going stale after the first push.
+#
+# `sync/*` PRs are excluded: they carry other people's already-reviewed work
+# down the chain and nobody needs a preview of them.
+#
+# NOT DONE HERE: tearing the environment down when the PR closes. That needs a
+# `pull_request: [closed]` trigger, and putting it in this file would give
+# every open PR a permanently-skipped "Tear down" check. It belongs in its own
+# workflow -- see BRANCHING.md, "One trigger per workflow".
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [test]
+
+concurrency:
+  # One environment per PR, and a new push replaces the deploy in flight
+  # rather than racing it.
+  group: feature-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy:
+    name: Deploy
+    if: ${{ !startsWith(github.head_ref, 'sync/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Resolve environment name
+        id: env
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          NAME="pr-$PR_NUMBER"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "url=https://$NAME.feature.example.invalid" >> "$GITHUB_OUTPUT"
+          echo "Target environment: $NAME"
+
+      - name: Build artifact
+        run: |
+          echo "MOCK: composer install --prefer-dist --no-interaction"
+          echo "MOCK: php artisan config:cache && php artisan route:cache"
+
+      - name: Deploy
+        run: |
+          echo "MOCK: provisioning ${{ steps.env.outputs.name }}"
+          echo "MOCK: php artisan migrate --force --seed"
+          echo "MOCK: serving at ${{ steps.env.outputs.url }}"
+
+      - name: Comment the environment URL on the PR
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ENV_NAME: ${{ steps.env.outputs.name }}
+          ENV_URL: ${{ steps.env.outputs.url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # A sticky comment, not a new one per push. `synchronize` fires on
+          # every commit, and a fresh comment each time buries the review.
+          MARKER="<!-- feature-env -->"
+
+          BODY=$(mktemp)
+          {
+            echo "$MARKER"
+            echo "### Feature environment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Environment | \`$ENV_NAME\` |"
+            echo "| URL | $ENV_URL |"
+            echo "| Commit | \`${HEAD_SHA:0:8}\` |"
+            echo ""
+            echo "_Mock deploy — nothing was actually provisioned._"
+          } > "$BODY"
+
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                       --paginate --jq \
+                       "[.[] | select(.body | startswith(\"$MARKER\"))] | .[0].id // empty" \
+                     2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            if ERR=$(gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" \
+                       -F "body=@$BODY" 2>&1 >/dev/null); then
+              echo "Updated the existing feature-env comment."
+            else
+              echo "::warning::Could not update comment $EXISTING: ${ERR:-unknown error}"
+            fi
+          else
+            if ERR=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                       -F "body=@$BODY" 2>&1 >/dev/null); then
+              echo "Posted the feature-env comment."
+            else
+              echo "::warning::Could not comment on PR #$PR_NUMBER: ${ERR:-unknown error}"
+            fi
+          fi
+
+          cat "$BODY" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
