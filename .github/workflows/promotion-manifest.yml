@@ -182,6 +182,30 @@ jobs:
           if body.strip() in ("", "null"):
               body = ""
 
+          # Drop the pull request template when nobody filled it in.
+          #
+          # The template's "Type of change" checklist is meaningful for a feature
+          # or a hotfix, which become one commit of one type. A promotion carries
+          # many commits of many types and has no single type, so leaving an
+          # untouched checklist above the manifest is noise -- and worse, an
+          # unticked box reads as something someone forgot to do.
+          #
+          # Only an *untouched* template is dropped. Tick a box, or write
+          # anything into the What/Why sections, and it is kept.
+          if START not in body and "## Type of change" in body:
+              ticked = re.search(r"^\s*[-*]\s*\[[xX]\]", body, re.M)
+              # Strip the template's own furniture and see whether anything
+              # a human wrote is left. DOTALL is needed to span an HTML
+              # comment but must not touch the line patterns -- with it,
+              # `^##.*$` matches from the first heading to end of string and
+              # swallows the whole body.
+              prose = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+              prose = re.sub(r"^##[^\n]*$", "", prose, flags=re.M)
+              prose = re.sub(r"^\s*[-*]\s*\[[ xX]\][^\n]*$", "", prose, flags=re.M)
+              prose = prose.strip()
+              if not ticked and not prose:
+                  body = ""
+
           # Replace only between the markers so anything a human wrote survives.
           if START in body and END in body:
               head_part, rest = body.split(START, 1)
