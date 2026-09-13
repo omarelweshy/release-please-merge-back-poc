@@ -1,0 +1,202 @@
+name: Promotion manifest
+
+# Writes the list of commits a promotion PR will carry into its body, grouped
+# by conventional-commit type, with the version bump they imply.
+#
+# The approval gate on a promotion is "is this the right release content", not
+# code review -- that already happened at `feature -> test`. But a promotion PR
+# shows a diff, not a list of changes, and a diff is the wrong shape for that
+# question. This puts the actual question in front of the approver.
+#
+# Only fires on the two promotions, identified by head branch:
+#   test    -> preprod
+#   preprod -> main
+#
+# Anything a human writes in the body is preserved: the generated block lives
+# between markers and only that block is rewritten. Write your notes above or
+# below it and they survive every refresh.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [preprod, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  # Editing a PR body needs pull-requests: write. Note that this is allowed to
+  # GITHUB_TOKEN even when "Allow GitHub Actions to create and approve pull
+  # requests" is off -- that setting gates *creating* a PR, not editing one.
+  contents: read
+  pull-requests: write
+
+jobs:
+  manifest:
+    name: Write promotion manifest
+    if: >-
+      (github.base_ref == 'preprod' && github.head_ref == 'test') ||
+      (github.base_ref == 'main' && github.head_ref == 'preprod')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Collect the commits being promoted
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE"
+          # Unit separator between fields; subjects can contain anything else.
+          git log --no-merges --pretty=format:'%h%x1f%s%x1f%an' \
+            "origin/$BASE..$HEAD_SHA" > /tmp/commits.tsv
+          echo "$(wc -l < /tmp/commits.tsv) commit(s) to promote."
+
+      - name: Render the manifest into the PR body
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Read the existing body through a file, never through an expression:
+          # a PR body is attacker-controlled text and `${{ }}` would splice it
+          # into the shell.
+          gh pr view "$PR_NUMBER" --json body --jq .body > /tmp/body.md
+
+          # Grouping into ordered sections is fiddly in shell and clear here.
+          python3 - <<'PY' > /tmp/newbody.md
+          import os, re
+
+          START = "<!-- promotion-manifest:start -->"
+          END   = "<!-- promotion-manifest:end -->"
+
+          # Same types, same order, same names as release-please-config.json.
+          SECTIONS = [
+              ("feat",     "Features"),
+              ("fix",      "Bug Fixes"),
+              ("perf",     "Performance Improvements"),
+              ("revert",   "Reverts"),
+              ("refactor", "Code Refactoring"),
+              ("docs",     "Documentation"),
+              ("build",    "Build System"),
+              ("deps",     "Dependencies"),
+              ("ci",       "Continuous Integration"),
+              ("test",     "Tests"),
+              ("style",    "Styles"),
+              ("chore",    "Miscellaneous"),
+          ]
+          KNOWN = dict(SECTIONS)
+          # type(scope)!: subject
+          PATTERN = re.compile(r"^([a-z]+)(\([^)]*\))?(!)?:\s*(.+)$")
+
+          base = os.environ["BASE"]
+          head = os.environ["HEAD"]
+          repo = os.environ["REPO"]
+
+          groups, other, breaking = {}, [], False
+          total = 0
+
+          with open("/tmp/commits.tsv", encoding="utf-8") as fh:
+              for line in fh:
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  total += 1
+                  sha, subject, author = line.split("\x1f", 2)
+                  m = PATTERN.match(subject)
+                  if not m:
+                      other.append((sha, subject, author))
+                      continue
+                  typ, _scope, bang, text = m.groups()
+                  if bang:
+                      breaking = True
+                  if typ in KNOWN:
+                      groups.setdefault(typ, []).append((sha, text, author, bool(bang)))
+                  else:
+                      other.append((sha, subject, author))
+
+          # What release-please will do with this once it reaches main.
+          if breaking:
+              bump = "**major** — contains a breaking change"
+          elif "feat" in groups:
+              bump = "**minor** — contains features"
+          elif "fix" in groups or "perf" in groups:
+              bump = "**patch** — fixes only"
+          else:
+              bump = "**none** — nothing release-please counts"
+
+          out = [START, ""]
+          out.append(f"## Promoting `{head}` → `{base}`")
+          out.append("")
+          out.append(f"**{total} commit(s).** Version impact: {bump}.")
+          out.append("")
+          out.append("> [!IMPORTANT]")
+          out.append("> Merge with **Create a merge commit**. Do not squash, do not rebase.")
+          out.append("> Keep this PR's title in plain prose: GitHub puts the title into the")
+          out.append("> merge commit body, and release-please parses that body. A")
+          out.append("> conventional-commit title here becomes a phantom changelog entry.")
+          out.append("")
+
+          if total == 0:
+              out.append(f"`{head}` carries nothing that `{base}` does not already have.")
+          else:
+              for typ, title in SECTIONS:
+                  if typ not in groups:
+                      continue
+                  out.append(f"### {title}")
+                  out.append("")
+                  for sha, text, author, bang in groups[typ]:
+                      mark = " **BREAKING**" if bang else ""
+                      out.append(
+                          f"- {text}{mark} "
+                          f"([`{sha}`](https://github.com/{repo}/commit/{sha})) — {author}"
+                      )
+                  out.append("")
+              if other:
+                  out.append("### Not conventional commits")
+                  out.append("")
+                  out.append("These will not appear in the changelog:")
+                  out.append("")
+                  for sha, subject, author in other:
+                      out.append(
+                          f"- {subject} "
+                          f"([`{sha}`](https://github.com/{repo}/commit/{sha})) — {author}"
+                      )
+                  out.append("")
+
+          out.append(END)
+          block = "\n".join(out)
+
+          with open("/tmp/body.md", encoding="utf-8") as fh:
+              body = fh.read()
+          if body.strip() in ("", "null"):
+              body = ""
+
+          # Replace only between the markers so anything a human wrote survives.
+          if START in body and END in body:
+              head_part, rest = body.split(START, 1)
+              _stale, tail = rest.split(END, 1)
+              body = head_part + block + tail
+          else:
+              body = (body.rstrip() + "\n\n" + block + "\n") if body.strip() else block + "\n"
+
+          print(body, end="")
+          PY
+
+          if cmp -s /tmp/body.md /tmp/newbody.md; then
+            echo "Manifest already current; leaving the body alone."
+            exit 0
+          fi
+
+          gh pr edit "$PR_NUMBER" --body-file /tmp/newbody.md
+          echo "Updated the body of PR #$PR_NUMBER."
