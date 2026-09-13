@@ -35,6 +35,7 @@ on:
 
 jobs:
   sync:
+    name: Propagate
     runs-on: ubuntu-latest
     permissions:
       contents: write

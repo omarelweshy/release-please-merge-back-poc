@@ -120,6 +120,28 @@ Two known gaps:
 | `deploy-preprod.yml` | Push to `preprod` | Deploys the branch tip. **Mock.** |
 | `pr-description.yml` | PR into `test`, `preprod` or `main` | Writes the PR body: commits and authors, plus the type checklist on feature PRs. |
 
+### Reading the check list on a promotion PR
+
+A `preprod -> main` PR lists a check called **Deploy preprod**. That is not a
+production deploy and the PR did not trigger it. Checks attach to *commits*, and
+GitHub shows every check on a commit in any pull request whose head is that
+commit -- so the preprod deploy that ran when the promotion merged into
+`preprod` is shown again on the PR that promotes `preprod` onwards. The same is
+true of `Merge commit check`, which is also a push-event check.
+
+Every job is named for what it does and which environment it touches, for
+exactly this reason. A job called just `Deploy` renders as a bare `Deploy`
+check, and then every deploy workflow in the repo looks like the production
+one.
+
+Production has two entry points and no others, matching `menu`:
+
+1. `release-please.yml` calls it after a release is cut.
+2. `workflow_dispatch`, by hand.
+
+`deploy-production.yml` has no `push` or `pull_request` trigger at all, so a
+pull request cannot start it.
+
 ### The three environments
 
 | Environment | Deployed by | When | Gated on a release? |
