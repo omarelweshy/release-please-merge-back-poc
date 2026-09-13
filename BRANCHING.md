@@ -117,6 +117,25 @@ Two known gaps:
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
+| `promotion-manifest.yml` | PR `test`→`preprod` or `preprod`→`main` | Writes the commits being promoted into the PR body, grouped by type. |
+
+### Promotion PR bodies are generated
+
+A promotion PR shows a **diff**. The question being asked of the approver is
+"is this the right release content" — and a diff is the wrong shape for that
+question, especially when the promotion carries a dozen commits from several
+people.
+
+`promotion-manifest.yml` writes the answer into the body: every commit being
+promoted, grouped under the same section names release-please uses, plus the
+version bump they imply (`major` / `minor` / `patch` / `none`). Commits that
+are not conventional are listed separately under "Not conventional commits",
+since those will be invisible in the changelog — that list should normally be
+empty, and a surprise in it is worth stopping for.
+
+The block lives between `<!-- promotion-manifest:start -->` and `:end` markers
+and only that block is rewritten. Notes you write above or below it survive
+every refresh.
 
 ### Production deploys only on a cut release
 
