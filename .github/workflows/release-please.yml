@@ -1,0 +1,46 @@
+name: release-please
+
+# Step 4 of the flow. Runs on main only. Builds CHANGELOG.md and the version
+# bump from the conventional-commit messages that arrived on main.
+#
+# The input it reads is the one squash commit per feature created at
+# `feature -> test`. Every merge above that point is a merge commit, so those
+# individual commits survive all the way to main intact. If anyone squashes a
+# `test -> preprod` or `preprod -> main` PR, main gets a single commit titled
+# something like "Merge test into preprod (#412)" and this produces nothing
+# useful. That is the load-bearing rule of the whole setup.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # PAT, not GITHUB_TOKEN: checks must run on the release PR, and the
+          # push that follows its merge must trigger the sync chain.
+          token: ${{ secrets.SYNC_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.release.outputs.release_created }}" = "true" ]; then
+            echo "Released ${{ steps.release.outputs.tag_name }}" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "${{ steps.release.outputs.pr }}" ]; then
+            echo "Release PR opened or updated." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No releasable commits on main." >> "$GITHUB_STEP_SUMMARY"
+          fi

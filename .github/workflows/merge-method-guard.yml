@@ -1,0 +1,51 @@
+name: merge method guard
+
+# GitHub cannot enforce a merge method per target branch -- the repo has to
+# allow squash (for feature -> test) and merge commits (for everything above
+# it), and any maintainer can pick the wrong one from the dropdown.
+#
+# This is the detector for that. It runs on `preprod` only, because that is the
+# one branch where every incoming commit must be a merge commit:
+#
+#   preprod <- test                      merge commit
+#   preprod <- sync/main-to-preprod      merge commit
+#
+# `test` cannot be guarded this way: feature -> test is legitimately a squash,
+# so single-parent commits are expected there. `main` cannot either: hotfixes
+# are legitimately squashed onto it.
+#
+# A failure here is not fatal to the code, but it means the branches have just
+# re-diverged and the next promotion will start conflicting. Fix forward by
+# merging preprod back into test (and main) with a merge commit.
+
+on:
+  push:
+    branches: [preprod]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verify the new commit on preprod is a merge commit
+        run: |
+          set -euo pipefail
+
+          PARENTS=$(git rev-list --parents -n 1 HEAD | wc -w)
+          # output is "<sha> <parent>..." so a merge commit yields 3+ fields
+          if [ "$PARENTS" -ge 3 ]; then
+            echo "OK: $(git rev-parse --short HEAD) is a merge commit."
+            exit 0
+          fi
+
+          echo "::error::$(git rev-parse --short HEAD) has a single parent -- this PR was squashed or rebased into preprod."
+          echo "::error::Subject: $(git log -1 --pretty=%s)"
+          echo "::error::preprod and its source branch have now re-diverged. Every future promotion will re-conflict on this content."
+          echo "::error::See BRANCHING.md -- only feature -> test may be squashed."
+          exit 1

@@ -1,0 +1,28 @@
+name: sync main -> preprod
+
+# Step 6 of the flow. Fires whenever main moves -- a merged release PR, or a
+# hotfix landing directly. Both need to travel back down.
+#
+# No loop guard is needed: this writes to `preprod`, never to `main`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-main-to-preprod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    uses: ./.github/workflows/sync.yml
+    with:
+      source: main
+      target: preprod
+      sync_branch: sync/main-to-preprod
+    secrets:
+      token: ${{ secrets.SYNC_TOKEN }}

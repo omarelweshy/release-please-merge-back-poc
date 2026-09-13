@@ -1,0 +1,121 @@
+name: Deploy to production
+
+# MOCK. Every deploy step is an echo; nothing leaves the runner.
+#
+# Two separate things happen here, and they are deliberately not the same job:
+#
+#   plan   -- runs when a PR into `main` is opened/updated. This is the
+#             "what would production get" preview, attached to the promotion PR
+#             (or to the release PR) so the approver can see the payload before
+#             clicking merge. Read-only. Never touches production.
+#
+#   apply  -- runs after the merge lands on `main`. This is the real deploy.
+#
+# A note for when this stops being a mock: menu's release-please.yml dispatches
+# its deploy inline, gated on `steps.release.outputs.release_created == 'true'`,
+# so it deploys the commit that was actually tagged. Hanging `apply` off a bare
+# push to `main` instead -- as it is here -- means it fires on the promotion
+# merge AND again on the release PR merge, and the first of those deploys a
+# commit with no tag and no changelog. For the real repo, move `apply` into
+# release-please.yml behind that same `release_created` gate. It is left on
+# `push` here so the POC can demonstrate the trigger without cutting releases.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  # Never let two production deploys overlap. `cancel-in-progress: false`
+  # because killing a half-finished deploy is worse than queueing behind it.
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Preview production payload
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show what production would receive
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "### Production deploy — PREVIEW (mock)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: \`$(cat version.txt)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Candidate: \`${HEAD_SHA:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "#### Commits not yet in \`$BASE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          git fetch --no-tags origin "$BASE"
+          git log --no-merges --pretty='- %s — %an' "origin/$BASE..$HEAD_SHA" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo "MOCK: no deployment performed. This job is read-only."
+
+  apply:
+    name: Deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Uncomment once a GitHub Environment exists. It is what gives production a
+    # required-reviewer gate and a deployment record, rather than relying on
+    # nobody having pushed the wrong button.
+    # environment:
+    #   name: production
+    #   url: https://example.invalid
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release under deploy
+        id: rel
+        run: |
+          set -euo pipefail
+          VERSION=$(cat version.txt)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # A tag pointing at this exact commit means release-please cut it.
+          # Anything else is an untagged promotion merge -- see the header note.
+          if TAG=$(git describe --exact-match --tags HEAD 2>/dev/null); then
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Deploying tagged release $TAG (version $VERSION)."
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "::warning::HEAD carries no tag. This is an untagged commit on main, not a cut release."
+          fi
+
+      - name: Build artifact
+        run: |
+          echo "MOCK: composer install --no-dev --optimize-autoloader"
+          echo "MOCK: php artisan config:cache && php artisan route:cache"
+
+      - name: Deploy
+        run: |
+          echo "MOCK: shipping ${{ steps.rel.outputs.version }} (${GITHUB_SHA:0:8}) to production"
+          echo "MOCK: php artisan migrate --force"
+          echo "MOCK: php artisan queue:restart"
+
+      - name: Record
+        run: |
+          {
+            echo "### Production deploy — APPLIED (mock)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`${{ steps.rel.outputs.version }}\` |"
+            echo "| Tag | \`${{ steps.rel.outputs.tag || 'none — untagged commit' }}\` |"
+            echo "| Commit | \`${GITHUB_SHA:0:8}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

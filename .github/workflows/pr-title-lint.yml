@@ -1,0 +1,55 @@
+name: Lint PR Title
+
+# Covers hotfix PRs into `main` only.
+#
+# `main` and `test` are the two squash boundaries, so on both the PR title
+# becomes the commit subject that release-please parses. PRs into `test` are
+# linted by the `alignment` job in test.yml instead, which gates the test suite
+# on the same rule -- so keeping them here too would just double the check.
+#
+# Promotion PRs (`preprod -> main`) and `sync/*` PRs are exempt: they are merge
+# commits, and their titles are never changelog input.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+    branches: [main]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint-pr-title:
+    name: Validate Conventional Commit title
+    if: ${{ !startsWith(github.head_ref, 'sync/') && github.head_ref != 'preprod' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep this list in sync with the `type` values in
+          # release-please-config.json -> changelog-sections.
+          types: |
+            feat
+            fix
+            perf
+            revert
+            refactor
+            docs
+            build
+            deps
+            ci
+            test
+            style
+            chore
+          requireScope: false
+          subjectPattern: ^(?![A-Z])(?!.*\.$).+$
+          subjectPatternError: |
+            The subject "{subject}" found in the pull request title "{title}"
+            didn't match the configured pattern. Start with a lowercase letter
+            and don't end with a period.

@@ -1,0 +1,43 @@
+name: sync preprod -> test
+
+# Step 7 of the flow. Chained specifically off the merge of the main -> preprod
+# sync, NOT off every push to preprod.
+#
+# Why the narrow trigger: a normal `test -> preprod` promotion also pushes to
+# preprod, leaving preprod one merge commit "ahead" of test. Triggering on every
+# push would open a sync PR carrying nothing but that merge commit -- noise on
+# every single release. Keying off the sync branch means this only runs when
+# there is genuinely new content coming down from main.
+#
+# SYNC_TOKEN must be a PAT rather than GITHUB_TOKEN. Today a human clicks merge,
+# so the `closed` event is attributed to them and this fires either way -- but
+# the PR that workflow opens needs its checks to run, and the moment anyone
+# enables auto-merge on `sync/*` the chain would silently stop with
+# GITHUB_TOKEN. Use the PAT and the behaviour does not depend on who clicks.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [preprod]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-preprod-to-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.ref == 'sync/main-to-preprod')
+    uses: ./.github/workflows/sync.yml
+    with:
+      source: preprod
+      target: test
+      sync_branch: sync/preprod-to-test
+    secrets:
+      token: ${{ secrets.SYNC_TOKEN }}

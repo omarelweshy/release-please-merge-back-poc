@@ -1,0 +1,134 @@
+name: sync (reusable)
+
+# Opens a PR propagating `source` down to `target`, and requests review from the
+# authors of the commits being propagated -- i.e. whoever wrote the hotfix.
+#
+# Deliberate behaviours:
+#   * If a sync PR is already open for this pair, this does NOTHING. It will not
+#     move the branch, because a human may be resolving conflicts on it.
+#   * The sync branch is set to the tip of `source`. GitHub computes
+#     mergeability; if it conflicts, the sync branch is where a human fixes it.
+#   * The PR must be merged with a MERGE COMMIT. Squashing here re-diverges the
+#     branches and is the root cause this whole setup exists to remove.
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: Branch to propagate from
+        required: true
+        type: string
+      target:
+        description: Branch to propagate into
+        required: true
+        type: string
+      sync_branch:
+        description: Name of the throwaway branch, e.g. sync/main-to-preprod
+        required: true
+        type: string
+    secrets:
+      token:
+        description: PAT. Must NOT be GITHUB_TOKEN -- events it creates do not trigger the next workflow in the chain.
+        required: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.token }}
+
+      - name: Propagate
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          SRC: ${{ inputs.source }}
+          TGT: ${{ inputs.target }}
+          BR: ${{ inputs.sync_branch }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin "$SRC" "$TGT"
+
+          AHEAD=$(git rev-list --count "origin/$TGT..origin/$SRC")
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "::notice::$TGT is already up to date with $SRC. Nothing to sync."
+            exit 0
+          fi
+          echo "$SRC is $AHEAD commit(s) ahead of $TGT."
+
+          EXISTING=$(gh pr list --base "$TGT" --head "$BR" --state open \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::Sync PR #$EXISTING ($BR -> $TGT) is already open; leaving it untouched."
+            echo "::notice::It may be waiting on review, or on a human resolving conflicts."
+            exit 0
+          fi
+
+          git push origin "+refs/remotes/origin/$SRC:refs/heads/$BR"
+
+          BODY=$(mktemp)
+          {
+            printf 'Automated propagation: `%s` -> `%s`.\n\n' "$SRC" "$TGT"
+            printf '> [!IMPORTANT]\n'
+            printf '> Merge this with **Create a merge commit**. Do not squash. Do not rebase.\n'
+            printf '> Squashing here re-diverges the branches, and every future promotion will re-conflict on the same content.\n\n'
+            printf '### Commits being propagated (%s)\n\n' "$AHEAD"
+            git log --no-merges --pretty='- %s — %an' "origin/$TGT..origin/$SRC"
+            printf '\n\nReview is requested from the authors listed above: you wrote these changes, so you are the right person to confirm they should land on `%s`.\n' "$TGT"
+          } > "$BODY"
+
+          PR_URL=$(gh pr create --base "$TGT" --head "$BR" \
+                     --title "sync: $SRC -> $TGT" --body-file "$BODY")
+          echo "Opened $PR_URL"
+          echo "PR_NUMBER=${PR_URL##*/}" >> "$GITHUB_ENV"
+
+      - name: Request review from the authors being propagated
+        if: env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+          SRC: ${{ inputs.source }}
+          TGT: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+
+          # Authors of the non-merge commits this PR carries.
+          # Bots, and commits whose email is not linked to a GitHub account, drop out.
+          AUTHORS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$TGT...$SRC" --paginate \
+            --jq '.commits[] | select(.parents | length == 1) | .author
+                  | select(. != null) | select(.type != "Bot") | .login' \
+            | sort -u || true)
+
+          # The PAT owner authored this PR; GitHub rejects them as a reviewer.
+          ME=$(gh api user --jq .login)
+
+          if [ -z "$AUTHORS" ]; then
+            echo "::warning::No linked GitHub users found among the propagated commits. PR #$PR_NUMBER has no reviewer."
+            exit 0
+          fi
+
+          ASSIGNEES=()
+          for A in $AUTHORS; do
+            if [ "$A" = "$ME" ]; then
+              echo "::warning::$A opened this PR (PAT owner) and cannot review it. Use a machine account for SYNC_TOKEN."
+              continue
+            fi
+            if gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+                 -f "reviewers[]=$A" --silent 2>/dev/null; then
+              echo "Requested review from $A"
+              ASSIGNEES+=("$A")
+            else
+              echo "::warning::Could not request review from $A -- likely no write access to this repo."
+            fi
+          done
+
+          if [ ${#ASSIGNEES[@]} -gt 0 ]; then
+            ARGS=()
+            for A in "${ASSIGNEES[@]:0:10}"; do ARGS+=(-f "assignees[]=$A"); done
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/assignees" \
+              "${ARGS[@]}" --silent || true
+          else
+            echo "::warning::PR #$PR_NUMBER has no reviewer. It will sit until someone picks it up."
+          fi

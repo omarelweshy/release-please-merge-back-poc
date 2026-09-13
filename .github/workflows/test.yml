@@ -1,0 +1,140 @@
+name: Test
+
+# MOCK test suite for `feature -> test` PRs, gated on the PR being *aligned*.
+#
+# "Aligned" means two things, checked by the `alignment` job below:
+#
+#   1. The PR title is a valid Conventional Commit.
+#      `feature -> test` is the only squash in this repo, so the PR title
+#      becomes the commit subject on `test` -- and that commit is the single
+#      atom release-please later reads to build the changelog. A title that is
+#      not a conventional commit produces a commit that is invisible to the
+#      release notes, permanently.
+#
+#   2. The branch is not behind `test`.
+#      A branch that does not contain the current tip of `test` is testing a
+#      codebase nobody is going to ship. Green here would mean nothing.
+#
+# The `test` job `needs: alignment`, so an unaligned PR burns no runner minutes
+# and shows no misleading green check.
+#
+# `sync/*` PRs bypass the gate: they are merge commits, their titles are never
+# changelog input, and by construction they carry content that `test` lacks.
+# Their tests still run.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [test]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  alignment:
+    name: PR alignment
+    if: ${{ !startsWith(github.head_ref, 'sync/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # --- 1. title is the changelog atom -------------------------------------
+      - name: Validate Conventional Commit title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with release-please-config.json -> changelog-sections.
+          types: |
+            feat
+            fix
+            perf
+            revert
+            refactor
+            docs
+            build
+            deps
+            ci
+            test
+            style
+            chore
+          requireScope: false
+          subjectPattern: ^(?![A-Z])(?!.*\.$).+$
+          subjectPatternError: |
+            The subject "{subject}" in the pull request title "{title}" didn't
+            match the required pattern. Start with a lowercase letter and don't
+            end with a period. This title becomes the commit on `test` and is
+            what release-please reads.
+
+      # --- 2. branch actually contains what `test` already has ----------------
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify the branch is not behind `test`
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin test
+
+          if git merge-base --is-ancestor origin/test "$HEAD_SHA"; then
+            echo "Branch contains the current tip of \`test\`."
+            exit 0
+          fi
+
+          BEHIND=$(git rev-list --count "$HEAD_SHA..origin/test")
+          echo "::error::This branch is $BEHIND commit(s) behind \`test\`."
+          echo "::error::Testing it would validate a codebase that is not what ships."
+          echo "::error::Update the branch first: git fetch origin && git merge origin/test"
+          exit 1
+
+  test:
+    name: PHPUnit
+    needs: alignment
+    # Two things are going on in this condition:
+    #   * `always()` plus an explicit failure check, because `alignment` is
+    #     *skipped* for sync/* PRs and a plain `needs` would skip the tests too.
+    #   * `action != 'edited'`, because the workflow listens for `edited` only so
+    #     the title gate re-runs when someone fixes the title. Editing a title or
+    #     a description changes no code, so re-running the suite is pure waste.
+    if: >-
+      ${{ always()
+          && github.event.action != 'edited'
+          && needs.alignment.result != 'failure'
+          && needs.alignment.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        run: |
+          echo "MOCK: shivammathur/setup-php@v2 - php 8.3, ext mbstring/pdo_mysql/bcmath"
+
+      - name: Install dependencies
+        run: |
+          echo "MOCK: composer install --prefer-dist --no-interaction --no-progress"
+
+      - name: Static analysis
+        run: |
+          echo "MOCK: ./vendor/bin/pint --test"
+          echo "MOCK: ./vendor/bin/phpstan analyse --memory-limit=1G"
+
+      - name: Run tests
+        run: |
+          echo "MOCK: php artisan test --parallel"
+          {
+            echo "### Test suite (mock)"
+            echo ""
+            echo "PR title: \`${{ github.event.pull_request.title }}\`"
+            echo "Head: \`${GITHUB_SHA:0:8}\`"
+            echo ""
+            echo "All mock checks passed."
+          } >> "$GITHUB_STEP_SUMMARY"
