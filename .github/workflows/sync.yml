@@ -28,7 +28,9 @@ on:
         type: string
     secrets:
       token:
-        description: PAT. Must NOT be GITHUB_TOKEN -- events it creates do not trigger the next workflow in the chain.
+        description: >-
+          Prefer a PAT. GITHUB_TOKEN works, but a PR it opens gets no workflow
+          runs, so the sync PR shows an empty check list.
         required: true
 
 jobs:

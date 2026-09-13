@@ -20,7 +20,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # release-please commits the changelog/version bump and opens the release PR.
+  contents: write
+  pull-requests: write
 
 jobs:
   release-please:
@@ -29,9 +31,15 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # PAT, not GITHUB_TOKEN: checks must run on the release PR, and the
-          # push that follows its merge must trigger the sync chain.
-          token: ${{ secrets.SYNC_TOKEN }}
+          # Prefer the PAT so checks run on the release PR: a PR opened with
+          # GITHUB_TOKEN gets no workflow runs, so it shows an empty check list
+          # and cannot satisfy required checks.
+          #
+          # Falls back to GITHUB_TOKEN so the workflow still works before
+          # SYNC_TOKEN exists. Without the fallback an unset secret resolves to
+          # an empty string and the action fails with
+          # "Input required and not supplied: token".
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
