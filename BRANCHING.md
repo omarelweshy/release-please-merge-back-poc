@@ -111,13 +111,41 @@ Two known gaps:
 | `test.yml` | PR into `test` | Gates on PR alignment, then runs the suite. **Mock.** |
 | `pr-title-lint.yml` | PR into `main` | Conventional-commit title on hotfix PRs. |
 | `pr-body-type.yml` | PR into `test` or `main` | Exactly one type ticked in the body, and it matches the title prefix. |
-| `deploy-production-preview.yml` | PR into `main` | Read-only preview of the payload. **Mock.** |
 | `deploy-production.yml` | Called by `release-please.yml` when a release is cut | Deploys the tagged commit. **Mock.** |
 | `release-please.yml` | Push to `main` | Opens/updates the release PR. |
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
 | `promotion-manifest.yml` | PR `test`→`preprod` or `preprod`→`main` | Writes the commits being promoted into the PR body, grouped by type. |
+
+### Nothing production-named runs on a pull request
+
+`deploy-production.yml` has no `pull_request` or `push` trigger at all —
+`workflow_call` and `workflow_dispatch` only. The single caller is
+`release-please.yml`, behind `release_created == 'true'`.
+
+There was briefly a `deploy-production-preview.yml` that ran on PRs into `main`
+to show the payload. It is gone: `promotion-manifest.yml` puts the same
+information in the PR body, grouped and with the version impact, which is
+better than a job summary — and a check named after production running on a
+pull request invites exactly the question "did it just deploy?" every time.
+
+### If no tag appears, nothing ships
+
+release-please cuts the GitHub release, and therefore the tag, on the run
+*after* the release PR merges. It finds that merged PR by its
+`autorelease: pending` label. If the label was never applied — a token without
+permission to label, for instance — it finds nothing, creates nothing, and
+exits zero. Green run, no tag.
+
+That used to be silent, and it matters more now that the production deploy is
+gated on `release_created`: no tag means production never ships, with nothing
+saying so. `release-please.yml` now checks the tag really exists on the remote
+and fails the run if it does not.
+
+To recover a release that was merged but never cut: confirm the merged release
+PR carries the `autorelease: pending` label, then re-run the workflow from the
+Actions tab.
 
 ### Promotion PR bodies are generated
 
