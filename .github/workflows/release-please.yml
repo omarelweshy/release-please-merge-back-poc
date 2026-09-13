@@ -26,6 +26,7 @@ permissions:
 
 jobs:
   release-please:
+    name: Create/update release PR
     runs-on: ubuntu-latest
     outputs:
       # `release_created` is the per-release flag. Compare it against the string
@@ -173,6 +174,7 @@ jobs:
   # does not trigger another workflow, so an `on: release` deploy would never
   # fire. Same job graph, no recursion guard to fight.
   deploy-production:
+    name: Release
     needs: release-please
     # Either path counts: release-please cut it, or the fallback did.
     if: >-

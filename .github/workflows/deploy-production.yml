@@ -46,7 +46,10 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy
+    # Named for the environment. A job called just "Deploy" shows on a pull
+    # request as a bare "Deploy" check, and every deploy workflow then looks
+    # like the production one.
+    name: Deploy production
     runs-on: ubuntu-latest
     # Uncomment once a GitHub Environment exists. It is what gives production a
     # required-reviewer gate and a deployment record, rather than relying on

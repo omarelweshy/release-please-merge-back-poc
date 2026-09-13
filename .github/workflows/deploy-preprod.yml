@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy
+    name: Deploy preprod
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Uncomment once a GitHub Environment exists, to get a deployment record
