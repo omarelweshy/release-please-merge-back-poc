@@ -111,6 +111,8 @@ jobs:
                   | select(. != null) | select(.type != "Bot") | .login' \
             | sort -u || true)
 
+          echo "Authors resolved from the propagated commits: ${AUTHORS:-<none>}"
+
           # GitHub rejects a PR's own author as a reviewer of it, so find out who
           # opened this one. Read it off the PR rather than calling `gh api user`:
           # that endpoint needs a *user* token and answers GITHUB_TOKEN with
@@ -132,12 +134,13 @@ jobs:
               echo "::warning::$A opened this PR (PAT owner) and cannot review it. Use a machine account for SYNC_TOKEN."
               continue
             fi
-            if gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
-                 -f "reviewers[]=$A" --silent 2>/dev/null; then
+            if ERR=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+                       -f "reviewers[]=$A" 2>&1 >/dev/null); then
               echo "Requested review from $A"
               ASSIGNEES+=("$A")
             else
-              echo "::warning::Could not request review from $A -- likely no write access to this repo."
+              # Common causes: $A has no write access, or $A opened this PR.
+              echo "::warning::Could not request review from $A: ${ERR:-unknown error}"
             fi
           done
 
@@ -145,7 +148,8 @@ jobs:
             ARGS=()
             for A in "${ASSIGNEES[@]:0:10}"; do ARGS+=(-f "assignees[]=$A"); done
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/assignees" \
-              "${ARGS[@]}" --silent || true
+              "${ARGS[@]}" >/dev/null \
+              || echo "::warning::Requested review but could not assign ${ASSIGNEES[*]}." 
           else
             echo "::warning::PR #$PR_NUMBER has no reviewer. It will sit until someone picks it up."
           fi
