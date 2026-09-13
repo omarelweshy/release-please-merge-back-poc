@@ -1,0 +1,69 @@
+name: Deploy to preprod
+
+# MOCK. Every deploy step is an echo; nothing leaves the runner.
+#
+# Fires on every push to `preprod`, which is exactly what "merged to preprod"
+# means -- there is no direct push to a protected branch. Two things arrive
+# here and both should deploy:
+#
+#   test -> preprod                  the promotion being staged for release
+#   sync/main-to-preprod -> preprod  a hotfix coming back down from production
+#
+# Unlike production this is NOT gated on a cut release. preprod exists to be
+# the thing you test before tagging, so it deploys the branch tip as-is. The
+# version it reports is therefore whatever version.txt says plus the commit,
+# which is deliberately not a release number.
+
+on:
+  push:
+    branches: [preprod]
+
+concurrency:
+  group: deploy-preprod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Uncomment once a GitHub Environment exists, to get a deployment record
+    # and a URL on the repo home page.
+    # environment:
+    #   name: preprod
+    #   url: https://preprod.example.invalid
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve what is being deployed
+        id: rel
+        run: |
+          set -euo pipefail
+          echo "version=$(cat version.txt)" >> "$GITHUB_OUTPUT"
+          echo "Deploying $(cat version.txt)+${GITHUB_SHA:0:8} to preprod."
+
+      - name: Build artifact
+        run: |
+          echo "MOCK: composer install --no-dev --optimize-autoloader"
+          echo "MOCK: php artisan config:cache && php artisan route:cache"
+
+      - name: Deploy
+        run: |
+          echo "MOCK: shipping ${{ steps.rel.outputs.version }}+${GITHUB_SHA:0:8} to preprod"
+          echo "MOCK: php artisan migrate --force"
+          echo "MOCK: php artisan queue:restart"
+
+      - name: Record
+        run: |
+          {
+            echo "### preprod deploy (mock)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`${{ steps.rel.outputs.version }}\` |"
+            echo "| Commit | \`${GITHUB_SHA:0:8}\` |"
+            echo "| Trigger | \`$(git log -1 --format=%s | head -c 72)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
