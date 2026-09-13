@@ -84,11 +84,30 @@ Two known gaps:
 |---|---|---|
 | `test.yml` | PR into `test` | Gates on PR alignment, then runs the suite. **Mock.** |
 | `pr-title-lint.yml` | PR into `main` | Conventional-commit title on hotfix PRs. |
-| `deploy-production.yml` | PR into `main`, and push to `main` | Previews the payload on the PR; deploys after merge. **Mock.** |
+| `pr-body-type.yml` | PR into `test` or `main` | Exactly one type ticked in the body, and it matches the title prefix. |
+| `deploy-production-preview.yml` | PR into `main` | Read-only preview of the payload. **Mock.** |
+| `deploy-production.yml` | Push to `main` | Deploys after merge. **Mock.** |
 | `release-please.yml` | Push to `main` | Opens/updates the release PR. |
 | `sync-main-to-preprod.yml` | Push to `main` | Step 6. |
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
+
+### One trigger per workflow
+
+A job skipped by a job-level `if:` still reports a `skipped` check on the pull
+request. Two jobs in one workflow -- one for `pull_request`, one for `push` --
+therefore put a permanently-skipped entry on every PR, which is noise that
+trains people to stop reading the check list.
+
+So: if a job only ever runs for one event, give it its own workflow file and
+put the condition in `on:`, not in `if:`. That is why the production deploy is
+two files.
+
+Job-level `if:` is still right where the condition genuinely varies per PR and
+cannot be expressed as a trigger. `github.head_ref` is the usual case, since
+GitHub has no head-branch filter in `on:` -- which is why the title and body
+lints show as skipped on `preprod -> main` and `sync/*` PRs. That one is not
+fixable by splitting files.
 
 ### What "aligned" means for a `feature -> test` PR
 
