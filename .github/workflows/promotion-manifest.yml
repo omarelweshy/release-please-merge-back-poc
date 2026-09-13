@@ -68,9 +68,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read the existing body through a file, never through an expression:
-          # a PR body is attacker-controlled text and `${{ }}` would splice it
-          # into the shell.
+          # Read the existing body through a file, never through a GitHub
+          # expression: a PR body is attacker-controlled text and interpolating
+          # it would splice it straight into the shell.
+          #
+          # Do not write a literal empty GitHub expression anywhere in a
+          # workflow, comments included -- they are parsed everywhere in the
+          # file, and an empty one fails the whole workflow with
+          # "An expression was expected". That is what broke this file.
           gh pr view "$PR_NUMBER" --json body --jq .body > /tmp/body.md
 
           # Grouping into ordered sections is fiddly in shell and clear here.
