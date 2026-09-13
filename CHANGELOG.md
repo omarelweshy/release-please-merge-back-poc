@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.0](https://github.com/omarelweshy/release-please-merge-back-poc/compare/v0.2.0...v0.3.0) (2026-09-13)
+
+
+### Features
+
+* add an artisan command that prints the deployed version ([34cc73c](https://github.com/omarelweshy/release-please-merge-back-poc/commit/34cc73c0070ac09c81134ff05f3b6224a618be2c))
+* add an artisan command that prints the deployed version ([1d66b8e](https://github.com/omarelweshy/release-please-merge-back-poc/commit/1d66b8e0461cc717e8ceb9a2d47f764e32465b41))
+* attach a request id to every API response ([0914b7c](https://github.com/omarelweshy/release-please-merge-back-poc/commit/0914b7ce4dca598ed7ba75d2be0a9ab5713a4a9f))
+* attach a request id to every API response ([5c2418a](https://github.com/omarelweshy/release-please-merge-back-poc/commit/5c2418acf7c3576b087b4c8d4b2e0b5aa940d01f))
+* generate the PR description for every pull request ([f1c0b09](https://github.com/omarelweshy/release-please-merge-back-poc/commit/f1c0b0978f8911781cdd48c389376df476c05d18))
+* report the build commit alongside the version ([e0eab66](https://github.com/omarelweshy/release-please-merge-back-poc/commit/e0eab66897fb25503ae497cc28897c0533b6833f))
+* report the build commit alongside the version ([d783ec1](https://github.com/omarelweshy/release-please-merge-back-poc/commit/d783ec172b2bf8d4e226c88721ccd586c73355c4))
+
+
+### Bug Fixes
+
+* cut the release ourselves when release-please leaves one pending ([fd1a897](https://github.com/omarelweshy/release-please-merge-back-poc/commit/fd1a897af0edfabca3913cb44a21d5b078d4b288))
+* don't open sync PRs that change nothing ([afb9633](https://github.com/omarelweshy/release-please-merge-back-poc/commit/afb96333c083a59d74cf5b833c62da6b4a0da3f8))
+* repair the promotion manifest workflow, which never ran ([7d5a093](https://github.com/omarelweshy/release-please-merge-back-poc/commit/7d5a093a8812218e85161a0302ab9368d685ac3a))
+* repair the promotion manifest workflow, which never ran ([86fdea6](https://github.com/omarelweshy/release-please-merge-back-poc/commit/86fdea6e199be883f887e6cadd5d48e8268ddf65))
+* repair the promotion manifest workflow, which never ran ([b76c359](https://github.com/omarelweshy/release-please-merge-back-poc/commit/b76c359c932ebec39491a29ef9cd19d9740f7204))
+
+
+### Documentation
+
+* say what the PR template does on a promotion ([8f2abb7](https://github.com/omarelweshy/release-please-merge-back-poc/commit/8f2abb7eb8a74f9ec5f0b05ece037f04c28b6824))
+
 ## [0.2.0](https://github.com/omarelweshy/release-please-merge-back-poc/compare/v0.1.0...v0.2.0) (2026-09-13)
 
 
