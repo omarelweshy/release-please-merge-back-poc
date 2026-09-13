@@ -50,14 +50,49 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - name: Summary
+      # release-please cuts the GitHub release -- and therefore the tag -- on the
+      # run *after* the release PR merges, by finding the merged PR labelled
+      # `autorelease: pending`. If that label was never applied (a token without
+      # permission to label, say) it finds nothing, creates nothing, and exits
+      # zero. The workflow goes green and no tag appears.
+      #
+      # That silence is the problem: the deploy job below is gated on
+      # release_created, so a missing tag means production quietly never ships.
+      # Fail loudly instead.
+      - name: Confirm the tag was actually created
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
         run: |
-          if [ "${{ steps.release.outputs.release_created }}" = "true" ]; then
-            echo "Released ${{ steps.release.outputs.tag_name }}" >> "$GITHUB_STEP_SUMMARY"
-          elif [ -n "${{ steps.release.outputs.pr }}" ]; then
-            echo "Release PR opened or updated." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .ref > /dev/null 2>&1; then
+            echo "Tag $TAG exists on the remote."
           else
-            echo "No releasable commits on main." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::release-please reported release_created=true but tag $TAG is not on the remote."
+            echo "::error::The production deploy is gated on this, so nothing will ship."
+            exit 1
+          fi
+
+      - name: Summary
+        env:
+          CREATED: ${{ steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          if [ "$CREATED" = "true" ]; then
+            echo "Released **$TAG**. Production deploy follows." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$PR" ]; then
+            echo "Release PR opened or updated. Merge it to cut the release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "No release cut on this run."
+              echo ""
+              echo "Expected if this push carried no \`feat:\` or \`fix:\` commits."
+              echo "If a release PR was just merged and you expected a tag, check that"
+              echo "the merged PR carried the \`autorelease: pending\` label -- without"
+              echo "it release-please cannot find the release to cut."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # Deploys ONLY on the run where a version was actually cut -- that is, when
