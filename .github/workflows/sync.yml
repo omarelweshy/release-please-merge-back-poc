@@ -64,6 +64,17 @@ jobs:
           fi
           echo "$SRC is $AHEAD commit(s) ahead of $TGT."
 
+          # Commits ahead is not the same as changes to propagate. A merge
+          # commit that brought nothing new, or a change that was already
+          # applied to the target by another route, leaves the two trees
+          # identical -- and a PR with "Files changed 0" is noise that has to be
+          # read and closed by a human every time it appears.
+          if git diff --quiet "origin/$TGT" "origin/$SRC"; then
+            echo "::notice::$SRC and $TGT have identical trees. $AHEAD commit(s) ahead, but nothing to propagate."
+            echo "::notice::No PR opened."
+            exit 0
+          fi
+
           EXISTING=$(gh pr list --base "$TGT" --head "$BR" --state open \
                        --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then

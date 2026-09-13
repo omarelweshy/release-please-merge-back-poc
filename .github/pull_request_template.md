@@ -1,3 +1,10 @@
+<!--
+PROMOTION PRs (`test` -> `preprod`, `preprod` -> `main`):
+leave this alone. The description is replaced automatically with the list of
+commits being promoted, and their authors, once the pull request is created.
+Ticking a box below opts out of that and keeps this template instead.
+-->
+
 ## Type of change
 
 <!--
