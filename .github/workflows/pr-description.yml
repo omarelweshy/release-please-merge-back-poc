@@ -55,10 +55,18 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$BASE"
-          # Unit separator between fields; subjects can contain anything else.
-          git log --no-merges --pretty=format:'%h%x1f%s%x1f%an' \
+
+          # Unit separator between fields, record separator between commits --
+          # a commit body spans lines, so newline cannot delimit records.
+          git log --no-merges --pretty=format:'%h%x1f%s%x1f%an%x1f%b%x1e' \
             "origin/$BASE..$HEAD_SHA" > /tmp/commits.tsv
-          echo "$(wc -l < /tmp/commits.tsv) commit(s)."
+
+          # Three dots: diff against the merge base, which is what the PR shows.
+          git diff --numstat "origin/$BASE...$HEAD_SHA" > /tmp/numstat.tsv || true
+
+          COMMITS=$(grep -c $'\x1e' /tmp/commits.tsv || echo 0)
+          FILES=$(wc -l < /tmp/numstat.tsv | tr -d ' ')
+          echo "$COMMITS commit(s), $FILES file(s) changed."
 
       - name: Render the description
         env:
@@ -112,23 +120,37 @@ jobs:
 
           groups, other, breaking, total = {}, [], False, 0
           with open("/tmp/commits.tsv", encoding="utf-8") as fh:
-              for line in fh:
-                  line = line.rstrip("\n")
-                  if not line:
+              for record in fh.read().split("\x1e"):
+                  record = record.strip("\n")
+                  if not record.strip():
                       continue
                   total += 1
-                  sha, subject, author = line.split("\x1f", 2)
+                  parts = record.split("\x1f")
+                  sha, subject, author = parts[0], parts[1], parts[2]
+                  body = parts[3].strip() if len(parts) > 3 else ""
                   m = PATTERN.match(subject)
                   if not m:
-                      other.append((sha, subject, author))
+                      other.append((sha, subject, author, body))
                       continue
                   typ, _scope, bang, text = m.groups()
                   if bang:
                       breaking = True
                   if typ in KNOWN:
-                      groups.setdefault(typ, []).append((sha, text, author, bool(bang)))
+                      groups.setdefault(typ, []).append((sha, text, author, bool(bang), body))
                   else:
-                      other.append((sha, subject, author))
+                      other.append((sha, subject, author, body))
+
+          files = []
+          try:
+              with open("/tmp/numstat.tsv", encoding="utf-8") as fh:
+                  for line in fh:
+                      cols = line.rstrip("\n").split("\t")
+                      if len(cols) == 3:
+                          files.append(cols)
+          except FileNotFoundError:
+              pass
+          added = sum(int(a) for a, _d, _p in files if a.isdigit())
+          removed = sum(int(d) for _a, d, _p in files if d.isdigit())
 
           def link(sha):
               return f"[`{sha}`](https://github.com/{repo}/commit/{sha})"
@@ -162,20 +184,41 @@ jobs:
               out.append(f"`{head}` carries nothing that `{base}` does not already have.")
               out.append("")
           else:
+              # A change PR is a handful of commits and the body is the
+              # reasoning worth reading. A promotion is dozens, and printing
+              # every body would bury the list it exists to show.
+              verbose = not promotion
+
+              def render(sha, text, author, bang, body):
+                  mark = " **BREAKING**" if bang else ""
+                  out.append(f"- **{text}**{mark} ({link(sha)}) — {author}")
+                  if verbose and body:
+                      out.append("")
+                      for para in body.split("\n"):
+                          out.append(f"  {para}" if para.strip() else "")
+                      out.append("")
+
               for typ, title in SECTIONS:
                   if typ not in groups:
                       continue
                   out += [f"### {title}", ""]
-                  for sha, text, author, bang in groups[typ]:
-                      mark = " **BREAKING**" if bang else ""
-                      out.append(f"- {text}{mark} ({link(sha)}) — {author}")
-                  out.append("")
+                  for sha, text, author, bang, body in groups[typ]:
+                      render(sha, text, author, bang, body)
+                  if not verbose:
+                      out.append("")
               if other:
                   out += ["### Not conventional commits", "",
                           "These will not appear in the changelog:", ""]
-                  for sha, subject, author in other:
-                      out.append(f"- {subject} ({link(sha)}) — {author}")
-                  out.append("")
+                  for sha, subject, author, body in other:
+                      render(sha, subject, author, False, body)
+                  if not verbose:
+                      out.append("")
+
+          if files:
+              out += [f"### Files changed ({len(files)}) — +{added} −{removed}", ""]
+              for a, d, path in sorted(files, key=lambda r: r[2]):
+                  out.append(f"- `{path}` +{a} −{d}")
+              out.append("")
 
           out.append(END)
           block = "\n".join(out)
