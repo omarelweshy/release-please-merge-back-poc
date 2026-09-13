@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   sync:
+    name: Open sync PR
     uses: ./.github/workflows/sync.yml
     with:
       source: main
