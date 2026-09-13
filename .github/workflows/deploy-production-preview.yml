@@ -1,0 +1,53 @@
+name: Production deploy preview
+
+# MOCK, and read-only. Shows what production would receive, attached to the PR
+# that proposes it -- the promotion PR, or the release PR -- so the approver can
+# see the payload before clicking merge. Never touches production.
+#
+# Separate from deploy-production.yml on purpose. Both used to live in one
+# workflow behind job-level `if:` conditions, which meant every pull request
+# carried a permanently-skipped "Deploy" check. A skipped job still reports a
+# check; the only way to not report one is to not trigger the workflow.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Preview payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show what production would receive
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "### Production deploy — PREVIEW (mock)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: \`$(cat version.txt)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Candidate: \`${HEAD_SHA:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "#### Commits not yet in \`$BASE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          git fetch --no-tags origin "$BASE"
+          git log --no-merges --pretty='- %s — %an' "origin/$BASE..$HEAD_SHA" \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+          echo "MOCK: no deployment performed. This job is read-only."

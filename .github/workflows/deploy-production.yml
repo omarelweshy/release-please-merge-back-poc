@@ -2,30 +2,38 @@ name: Deploy to production
 
 # MOCK. Every deploy step is an echo; nothing leaves the runner.
 #
-# Two separate things happen here, and they are deliberately not the same job:
+# This does NOT listen for pushes to `main`. It used to, and that was wrong:
+# `main` is pushed twice per release -- once when the promotion merges, and
+# again when the release PR merges -- so production was deployed from an
+# untagged commit before the version bump and changelog even existed.
 #
-#   plan   -- runs when a PR into `main` is opened/updated. This is the
-#             "what would production get" preview, attached to the promotion PR
-#             (or to the release PR) so the approver can see the payload before
-#             clicking merge. Read-only. Never touches production.
+# Instead release-please.yml calls this, gated on
+# `release_created == 'true'`, which is only true on the run where a version
+# was actually cut. One release, one deploy, of the commit that carries the tag.
 #
-#   apply  -- runs after the merge lands on `main`. This is the real deploy.
-#
-# A note for when this stops being a mock: menu's release-please.yml dispatches
-# its deploy inline, gated on `steps.release.outputs.release_created == 'true'`,
-# so it deploys the commit that was actually tagged. Hanging `apply` off a bare
-# push to `main` instead -- as it is here -- means it fires on the promotion
-# merge AND again on the release PR merge, and the first of those deploys a
-# commit with no tag and no changelog. For the real repo, move `apply` into
-# release-please.yml behind that same `release_created` gate. It is left on
-# `push` here so the POC can demonstrate the trigger without cutting releases.
+# Why called rather than triggered on `release`/tag push: a release or tag
+# created with GITHUB_TOKEN does not trigger another workflow (GitHub's
+# anti-recursion guard), so a `on: release` workflow would simply never fire.
+# Running in the same job graph sidesteps that entirely. menu's
+# release-please.yml does the same thing for the same reason.
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
-    branches: [main]
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag being deployed, e.g. v0.2.0
+        required: true
+        type: string
+      version:
+        description: Version being deployed, e.g. 0.2.0
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to deploy, e.g. v0.2.0. Leave blank to deploy the current tip of main.
+        required: false
+        type: string
 
 concurrency:
   # Never let two production deploys overlap. `cancel-in-progress: false`
@@ -37,39 +45,8 @@ permissions:
   contents: read
 
 jobs:
-  plan:
-    name: Preview production payload
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Show what production would receive
-        env:
-          BASE: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-
-          echo "### Production deploy — PREVIEW (mock)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Version: \`$(cat version.txt)\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Candidate: \`${HEAD_SHA:0:8}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "#### Commits not yet in \`$BASE\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          git fetch --no-tags origin "$BASE"
-          git log --no-merges --pretty='- %s — %an' "origin/$BASE..$HEAD_SHA" \
-            >> "$GITHUB_STEP_SUMMARY" || true
-
-          echo "MOCK: no deployment performed. This job is read-only."
-
-  apply:
+  deploy:
     name: Deploy
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Uncomment once a GitHub Environment exists. It is what gives production a
     # required-reviewer gate and a deployment record, rather than relying on
@@ -79,23 +56,27 @@ jobs:
     #   url: https://example.invalid
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Deploy the tag, not whatever main happens to be now. On a manual
+          # run with no tag given this is empty and checkout takes the default.
+          ref: ${{ inputs.tag }}
 
-      - name: Resolve release under deploy
+      - name: Resolve what is being deployed
         id: rel
         run: |
           set -euo pipefail
-          VERSION=$(cat version.txt)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TAG="${{ inputs.tag }}"
+          VERSION="${{ inputs.version }}"
+          [ -n "$VERSION" ] || VERSION=$(cat version.txt)
 
-          # A tag pointing at this exact commit means release-please cut it.
-          # Anything else is an untagged promotion merge -- see the header note.
-          if TAG=$(git describe --exact-match --tags HEAD 2>/dev/null); then
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-            echo "Deploying tagged release $TAG (version $VERSION)."
-          else
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "::warning::HEAD carries no tag. This is an untagged commit on main, not a cut release."
+          if [ -z "$TAG" ]; then
+            echo "::warning::No tag supplied. Deploying the current tip of main, which is not a cut release."
+            TAG="(untagged)"
           fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Deploying $TAG (version $VERSION) at $(git rev-parse --short HEAD)."
 
       - name: Build artifact
         run: |
@@ -104,7 +85,7 @@ jobs:
 
       - name: Deploy
         run: |
-          echo "MOCK: shipping ${{ steps.rel.outputs.version }} (${GITHUB_SHA:0:8}) to production"
+          echo "MOCK: shipping ${{ steps.rel.outputs.version }} (${{ steps.rel.outputs.tag }}) to production"
           echo "MOCK: php artisan migrate --force"
           echo "MOCK: php artisan queue:restart"
 
@@ -116,6 +97,6 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Version | \`${{ steps.rel.outputs.version }}\` |"
-            echo "| Tag | \`${{ steps.rel.outputs.tag || 'none — untagged commit' }}\` |"
+            echo "| Tag | \`${{ steps.rel.outputs.tag }}\` |"
             echo "| Commit | \`${GITHUB_SHA:0:8}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

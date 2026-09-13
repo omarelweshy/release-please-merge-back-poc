@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # The reusable workflow pushes the sync branch and opens a PR.
+  contents: write
+  pull-requests: write
 
 jobs:
   sync:
@@ -25,4 +27,8 @@ jobs:
       target: preprod
       sync_branch: sync/main-to-preprod
     secrets:
-      token: ${{ secrets.SYNC_TOKEN }}
+      # Falls back to GITHUB_TOKEN so this works before SYNC_TOKEN exists; an
+      # unset secret is an empty string, not a missing input, so without the
+      # fallback checkout fails outright. See the header note for what the PAT
+      # buys you.
+      token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}

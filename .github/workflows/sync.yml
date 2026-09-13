@@ -28,12 +28,17 @@ on:
         type: string
     secrets:
       token:
-        description: PAT. Must NOT be GITHUB_TOKEN -- events it creates do not trigger the next workflow in the chain.
+        description: >-
+          Prefer a PAT. GITHUB_TOKEN works, but a PR it opens gets no workflow
+          runs, so the sync PR shows an empty check list.
         required: true
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,14 +90,19 @@ jobs:
           echo "Opened $PR_URL"
           echo "PR_NUMBER=${PR_URL##*/}" >> "$GITHUB_ENV"
 
+      # Best-effort. By the time this runs the PR exists and the propagation has
+      # succeeded, so nothing in here may fail the workflow -- a red run would
+      # say "sync failed" when the sync is sitting there waiting to be merged.
+      # Hence no `set -e`, and an explicit `exit 0` at the end.
       - name: Request review from the authors being propagated
         if: env.PR_NUMBER != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.token }}
           SRC: ${{ inputs.source }}
           TGT: ${{ inputs.target }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           # Authors of the non-merge commits this PR carries.
           # Bots, and commits whose email is not linked to a GitHub account, drop out.
@@ -101,26 +111,36 @@ jobs:
                   | select(. != null) | select(.type != "Bot") | .login' \
             | sort -u || true)
 
-          # The PAT owner authored this PR; GitHub rejects them as a reviewer.
-          ME=$(gh api user --jq .login)
+          echo "Authors resolved from the propagated commits: ${AUTHORS:-<none>}"
+
+          # GitHub rejects a PR's own author as a reviewer of it, so find out who
+          # opened this one. Read it off the PR rather than calling `gh api user`:
+          # that endpoint needs a *user* token and answers GITHUB_TOKEN with
+          # "Resource not accessible by integration" (HTTP 403).
+          ME=$(gh pr view "$PR_NUMBER" --json author --jq .author.login 2>/dev/null || echo "")
 
           if [ -z "$AUTHORS" ]; then
             echo "::warning::No linked GitHub users found among the propagated commits. PR #$PR_NUMBER has no reviewer."
             exit 0
           fi
 
+          if [ -z "$ME" ]; then
+            echo "::notice::Could not determine who opened PR #$PR_NUMBER; skipping the self-review filter."
+          fi
+
           ASSIGNEES=()
           for A in $AUTHORS; do
-            if [ "$A" = "$ME" ]; then
+            if [ -n "$ME" ] && [ "$A" = "$ME" ]; then
               echo "::warning::$A opened this PR (PAT owner) and cannot review it. Use a machine account for SYNC_TOKEN."
               continue
             fi
-            if gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
-                 -f "reviewers[]=$A" --silent 2>/dev/null; then
+            if ERR=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+                       -f "reviewers[]=$A" 2>&1 >/dev/null); then
               echo "Requested review from $A"
               ASSIGNEES+=("$A")
             else
-              echo "::warning::Could not request review from $A -- likely no write access to this repo."
+              # Common causes: $A has no write access, or $A opened this PR.
+              echo "::warning::Could not request review from $A: ${ERR:-unknown error}"
             fi
           done
 
@@ -128,7 +148,10 @@ jobs:
             ARGS=()
             for A in "${ASSIGNEES[@]:0:10}"; do ARGS+=(-f "assignees[]=$A"); done
             gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/assignees" \
-              "${ARGS[@]}" --silent || true
+              "${ARGS[@]}" >/dev/null \
+              || echo "::warning::Requested review but could not assign ${ASSIGNEES[*]}." 
           else
             echo "::warning::PR #$PR_NUMBER has no reviewer. It will sit until someone picks it up."
           fi
+
+          exit 0
