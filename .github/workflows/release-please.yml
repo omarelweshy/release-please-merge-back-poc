@@ -34,7 +34,16 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
+      # Set when the fallback below had to cut the release itself.
+      fallback_created: ${{ steps.ensure.outputs.created }}
+      fallback_tag: ${{ steps.ensure.outputs.tag }}
+      fallback_version: ${{ steps.ensure.outputs.version }}
     steps:
+      # Needed by the fallback, which reads version.txt and CHANGELOG.md.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
@@ -49,6 +58,66 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # release-please is supposed to cut the GitHub release, and therefore the
+      # tag, on the run after the release PR merges. In this repository it did
+      # not: run #7 processed the merge of the v0.2.0 release PR, exited
+      # successfully, and created no tag and no release, leaving PR #6 merged
+      # and still labelled `autorelease: pending`. While a merged release PR is
+      # pending, release-please will not open the next one either -- so the
+      # whole release process stops dead, silently, with green runs.
+      #
+      # This cuts the release itself when that state is detected. It is
+      # idempotent: if the tag already exists it does nothing, so on a healthy
+      # run where release-please did its job this is a no-op.
+      - name: Cut the release if release-please left one pending
+        id: ensure
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "created=false" >> "$GITHUB_OUTPUT"
+
+          VERSION=$(tr -d "[:space:]" < version.txt)
+          TAG="v$VERSION"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to do."
+            exit 0
+          fi
+
+          PENDING=$(gh pr list --state merged --base "${GITHUB_REF_NAME}" \
+                      --label "autorelease: pending" --limit 1 \
+                      --json number,mergeCommit \
+                      --jq '.[0] | select(. != null) | "\(.number) \(.mergeCommit.oid)"' \
+                    2>/dev/null || echo "")
+
+          if [ -z "$PENDING" ]; then
+            echo "No merged release PR is waiting to be tagged."
+            exit 0
+          fi
+
+          NUM="${PENDING%% *}"
+          SHA="${PENDING##* }"
+          echo "::warning::release-please left PR #$NUM merged and untagged. Cutting $TAG at ${SHA:0:8}."
+
+          # Release notes = the top section of the changelog, i.e. this version.
+          NOTES=$(mktemp)
+          awk '/^## /{ if (seen) exit; seen=1 } seen' CHANGELOG.md > "$NOTES" || true
+          [ -s "$NOTES" ] || echo "Release $TAG" > "$NOTES"
+
+          gh release create "$TAG" --target "$SHA" --title "$TAG" --notes-file "$NOTES"
+
+          gh label create "autorelease: tagged" --color ededed --force >/dev/null 2>&1 || true
+          gh pr edit "$NUM" --remove-label "autorelease: pending" \
+                            --add-label "autorelease: tagged" >/dev/null 2>&1 \
+            || echo "::warning::Cut $TAG but could not relabel PR #$NUM; release-please may stall again."
+
+          {
+            echo "created=true"
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
 
       # release-please cuts the GitHub release -- and therefore the tag -- on the
       # run *after* the release PR merges, by finding the merged PR labelled
@@ -105,8 +174,11 @@ jobs:
   # fire. Same job graph, no recursion guard to fight.
   deploy-production:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    # Either path counts: release-please cut it, or the fallback did.
+    if: >-
+      ${{ needs.release-please.outputs.release_created == 'true'
+          || needs.release-please.outputs.fallback_created == 'true' }}
     uses: ./.github/workflows/deploy-production.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-      version: ${{ needs.release-please.outputs.version }}
+      tag: ${{ needs.release-please.outputs.tag_name || needs.release-please.outputs.fallback_tag }}
+      version: ${{ needs.release-please.outputs.version || needs.release-please.outputs.fallback_version }}
