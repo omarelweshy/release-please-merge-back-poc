@@ -118,7 +118,7 @@ Two known gaps:
 | `sync-preprod-to-test.yml` | Merge of `sync/main-to-preprod` | Step 7. |
 | `merge-method-guard.yml` | Push to `preprod` | Fails if someone squashed. |
 | `deploy-preprod.yml` | Push to `preprod` | Deploys the branch tip. **Mock.** |
-| `promotion-manifest.yml` | PR `test`→`preprod` or `preprod`→`main` | Writes the commits being promoted into the PR body, grouped by type. |
+| `pr-description.yml` | PR into `test`, `preprod` or `main` | Writes the PR body: commits and authors, plus the type checklist on feature PRs. |
 
 ### The three environments
 
@@ -150,7 +150,7 @@ trigger per workflow" below. Until it exists, they accumulate.
 `release-please.yml`, behind `release_created == 'true'`.
 
 There was briefly a `deploy-production-preview.yml` that ran on PRs into `main`
-to show the payload. It is gone: `promotion-manifest.yml` puts the same
+to show the payload. It is gone: `pr-description.yml` puts the same
 information in the PR body, grouped and with the version impact, which is
 better than a job summary — and a check named after production running on a
 pull request invites exactly the question "did it just deploy?" every time.
@@ -179,14 +179,14 @@ A promotion PR shows a **diff**. The question being asked of the approver is
 question, especially when the promotion carries a dozen commits from several
 people.
 
-`promotion-manifest.yml` writes the answer into the body: every commit being
+`pr-description.yml` writes the answer into the body: every commit being
 promoted, grouped under the same section names release-please uses, plus the
 version bump they imply (`major` / `minor` / `patch` / `none`). Commits that
 are not conventional are listed separately under "Not conventional commits",
 since those will be invisible in the changelog — that list should normally be
 empty, and a surprise in it is worth stopping for.
 
-The block lives between `<!-- promotion-manifest:start -->` and `:end` markers
+The block lives between `<!-- pr-description:start -->` and `:end` markers
 and only that block is rewritten. Notes you write above or below it survive
 every refresh.
 

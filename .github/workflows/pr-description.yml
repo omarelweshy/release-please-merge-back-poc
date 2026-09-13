@@ -1,0 +1,223 @@
+name: PR description
+
+# Fills in a pull request description on create, and keeps the commit list
+# fresh afterwards. Two shapes, decided by which branches are involved:
+#
+#   promotion   test -> preprod, preprod -> main
+#               The commits being promoted, grouped by conventional-commit
+#               type, with the version bump they imply. No checklist: a
+#               promotion carries many commits of many types and has no single
+#               type, and its title must stay plain prose.
+#
+#   change      anything -> test, or a hotfix -> main
+#               The type checklist that pr-body-type.yml validates, What/Why
+#               sections to fill in, and the commits for reference. These are
+#               squashed, so the PR title is what ends up in the changelog.
+#
+# `sync/*` PRs are left alone entirely -- sync.yml writes their body itself.
+#
+# Seeding happens once, when the body is still the placeholder template. After
+# that only the block between the markers is rewritten, so a ticked box, and
+# anything written into What/Why, survives every later push.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [test, preprod, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  # Editing a PR body needs pull-requests: write. That is allowed to
+  # GITHUB_TOKEN even when "Allow GitHub Actions to create and approve pull
+  # requests" is off -- that setting gates creating a PR, not editing one.
+  contents: read
+  pull-requests: write
+
+jobs:
+  describe:
+    name: Write description
+    if: ${{ !startsWith(github.head_ref, 'sync/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Collect the commits
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE"
+          # Unit separator between fields; subjects can contain anything else.
+          git log --no-merges --pretty=format:'%h%x1f%s%x1f%an' \
+            "origin/$BASE..$HEAD_SHA" > /tmp/commits.tsv
+          echo "$(wc -l < /tmp/commits.tsv) commit(s)."
+
+      - name: Render the description
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Read the existing body through a file, never through a GitHub
+          # expression: a PR body is attacker-controlled text and interpolating
+          # it would splice it straight into the shell.
+          #
+          # Do not write a literal empty GitHub expression anywhere in a
+          # workflow, comments included -- they are parsed everywhere in the
+          # file, and an empty one fails the whole workflow with
+          # "An expression was expected".
+          gh pr view "$PR_NUMBER" --json body --jq .body > /tmp/body.md
+
+          python3 - <<'PY' > /tmp/newbody.md
+          import os, re
+
+          START = "<!-- pr-description:start -->"
+          END   = "<!-- pr-description:end -->"
+
+          # Same types, order and names as release-please-config.json.
+          SECTIONS = [
+              ("feat",     "Features"),
+              ("fix",      "Bug Fixes"),
+              ("perf",     "Performance Improvements"),
+              ("revert",   "Reverts"),
+              ("refactor", "Code Refactoring"),
+              ("docs",     "Documentation"),
+              ("build",    "Build System"),
+              ("deps",     "Dependencies"),
+              ("ci",       "Continuous Integration"),
+              ("test",     "Tests"),
+              ("style",    "Styles"),
+              ("chore",    "Miscellaneous"),
+          ]
+          KNOWN = dict(SECTIONS)
+          PATTERN = re.compile(r"^([a-z]+)(\([^)]*\))?(!)?:\s*(.+)$")
+
+          base = os.environ["BASE"]
+          head = os.environ["HEAD"]
+          repo = os.environ["REPO"]
+
+          promotion = (base, head) in (("preprod", "test"), ("main", "preprod"))
+
+          groups, other, breaking, total = {}, [], False, 0
+          with open("/tmp/commits.tsv", encoding="utf-8") as fh:
+              for line in fh:
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  total += 1
+                  sha, subject, author = line.split("\x1f", 2)
+                  m = PATTERN.match(subject)
+                  if not m:
+                      other.append((sha, subject, author))
+                      continue
+                  typ, _scope, bang, text = m.groups()
+                  if bang:
+                      breaking = True
+                  if typ in KNOWN:
+                      groups.setdefault(typ, []).append((sha, text, author, bool(bang)))
+                  else:
+                      other.append((sha, subject, author))
+
+          def link(sha):
+              return f"[`{sha}`](https://github.com/{repo}/commit/{sha})"
+
+          out = [START, ""]
+
+          if promotion:
+              if breaking:
+                  bump = "**major** — contains a breaking change"
+              elif "feat" in groups:
+                  bump = "**minor** — contains features"
+              elif "fix" in groups or "perf" in groups:
+                  bump = "**patch** — fixes only"
+              else:
+                  bump = "**none** — nothing release-please counts"
+
+              out += [
+                  f"## Promoting `{head}` → `{base}`", "",
+                  f"**{total} commit(s).** Version impact: {bump}.", "",
+                  "> [!IMPORTANT]",
+                  "> Merge with **Create a merge commit**. Do not squash, do not rebase.",
+                  "> Keep this PR's title in plain prose: GitHub puts the title into the",
+                  "> merge commit body, and release-please parses that body. A",
+                  "> conventional-commit title here becomes a phantom changelog entry.",
+                  "",
+              ]
+          else:
+              out += [f"## Commits (`{head}` → `{base}`)", ""]
+
+          if total == 0:
+              out.append(f"`{head}` carries nothing that `{base}` does not already have.")
+              out.append("")
+          else:
+              for typ, title in SECTIONS:
+                  if typ not in groups:
+                      continue
+                  out += [f"### {title}", ""]
+                  for sha, text, author, bang in groups[typ]:
+                      mark = " **BREAKING**" if bang else ""
+                      out.append(f"- {text}{mark} ({link(sha)}) — {author}")
+                  out.append("")
+              if other:
+                  out += ["### Not conventional commits", "",
+                          "These will not appear in the changelog:", ""]
+                  for sha, subject, author in other:
+                      out.append(f"- {subject} ({link(sha)}) — {author}")
+                  out.append("")
+
+          out.append(END)
+          block = "\n".join(out)
+
+          # The checklist pr-body-type.yml validates. Seeded once, then left
+          # alone -- it lives outside the managed block so a ticked box is never
+          # overwritten by a later push.
+          checklist = "\n".join(
+              ["## Type of change", "",
+               "<!-- Tick exactly ONE. It must match the prefix of your PR title."
+               " Keep the backticks. -->", ""]
+              + [f"- [ ] `{t}`" for t, _ in SECTIONS]
+              + ["", "## What changed", "", "## Why", ""]
+          )
+
+          with open("/tmp/body.md", encoding="utf-8") as fh:
+              body = fh.read()
+          if body.strip() in ("", "null"):
+              body = ""
+
+          # The placeholder the template puts there is not content.
+          if "filled in automatically" in body and START not in body:
+              body = ""
+
+          if START in body and END in body:
+              before, rest = body.split(START, 1)
+              _stale, after = rest.split(END, 1)
+              body = before + block + after
+          elif body.strip():
+              body = body.rstrip() + "\n\n" + block + "\n"
+          elif promotion:
+              body = block + "\n"
+          else:
+              body = checklist + "\n" + block + "\n"
+
+          print(body, end="")
+          PY
+
+          if cmp -s /tmp/body.md /tmp/newbody.md; then
+            echo "Description already current; leaving it alone."
+            exit 0
+          fi
+
+          gh pr edit "$PR_NUMBER" --body-file /tmp/newbody.md
+          echo "Updated the description of PR #$PR_NUMBER."
