@@ -31,8 +31,34 @@ Set the repository to **use the PR title as the squash commit message**
 (Settings → General → Pull Requests), otherwise GitHub will substitute the
 branch name and release-please will see nothing.
 
-Promotion and sync PR titles are free-form — they become merge commits and are
-never changelog input.
+### Promotion and sync PR titles must NOT be conventional commits
+
+This is not cosmetic, and it is the opposite of the rule above.
+
+When GitHub creates a merge commit it writes `Merge pull request #N from
+owner/branch` as the subject and **puts the PR title in the body**. release-please
+parses the body. So a promotion PR titled `feat: ship the thing` lands on `main`
+as a commit whose body is `feat: ship the thing`, and you get a phantom
+changelog entry — on top of the real entries from the commits the promotion
+actually carried, and possibly a wrong minor bump.
+
+Observed directly in this repo: PR #5 was titled `feat: add health check
+endpoint` and merged with a merge commit. Its merge commit `a26d41d` has a
+non-conventional subject and the body `feat: add health check endpoint`, and
+release-please emitted an entry for it — duplicating the entry from the real
+commit `a0893d8` underneath.
+
+So title promotion and sync PRs in plain prose:
+
+- `Promote test to preprod (2026-09-13)`
+- `Release candidate: preprod to main`
+
+`sync.yml` names its own PRs `sync: <source> -> <target>`, and `sync` is absent
+from `changelog-sections`, so those produce nothing.
+
+The same trap catches feature PRs merged the wrong way: a `feat:`-titled PR
+merged with a merge commit instead of a squash yields two entries for one
+change. Squash at `feature -> test`, always.
 
 ## The flow
 

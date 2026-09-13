@@ -36,6 +36,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,14 +90,19 @@ jobs:
           echo "Opened $PR_URL"
           echo "PR_NUMBER=${PR_URL##*/}" >> "$GITHUB_ENV"
 
+      # Best-effort. By the time this runs the PR exists and the propagation has
+      # succeeded, so nothing in here may fail the workflow -- a red run would
+      # say "sync failed" when the sync is sitting there waiting to be merged.
+      # Hence no `set -e`, and an explicit `exit 0` at the end.
       - name: Request review from the authors being propagated
         if: env.PR_NUMBER != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.token }}
           SRC: ${{ inputs.source }}
           TGT: ${{ inputs.target }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           # Authors of the non-merge commits this PR carries.
           # Bots, and commits whose email is not linked to a GitHub account, drop out.
@@ -103,17 +111,24 @@ jobs:
                   | select(. != null) | select(.type != "Bot") | .login' \
             | sort -u || true)
 
-          # The PAT owner authored this PR; GitHub rejects them as a reviewer.
-          ME=$(gh api user --jq .login)
+          # GitHub rejects a PR's own author as a reviewer of it, so find out who
+          # opened this one. Read it off the PR rather than calling `gh api user`:
+          # that endpoint needs a *user* token and answers GITHUB_TOKEN with
+          # "Resource not accessible by integration" (HTTP 403).
+          ME=$(gh pr view "$PR_NUMBER" --json author --jq .author.login 2>/dev/null || echo "")
 
           if [ -z "$AUTHORS" ]; then
             echo "::warning::No linked GitHub users found among the propagated commits. PR #$PR_NUMBER has no reviewer."
             exit 0
           fi
 
+          if [ -z "$ME" ]; then
+            echo "::notice::Could not determine who opened PR #$PR_NUMBER; skipping the self-review filter."
+          fi
+
           ASSIGNEES=()
           for A in $AUTHORS; do
-            if [ "$A" = "$ME" ]; then
+            if [ -n "$ME" ] && [ "$A" = "$ME" ]; then
               echo "::warning::$A opened this PR (PAT owner) and cannot review it. Use a machine account for SYNC_TOKEN."
               continue
             fi
@@ -134,3 +149,5 @@ jobs:
           else
             echo "::warning::PR #$PR_NUMBER has no reviewer. It will sit until someone picks it up."
           fi
+
+          exit 0
