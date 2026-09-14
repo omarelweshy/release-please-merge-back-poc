@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/omarelweshy/release-please-merge-back-poc/compare/v0.3.0...v0.4.0) (2026-09-14)
+
+
+### Features
+
+* show the release notes for the deployed version ([72334dd](https://github.com/omarelweshy/release-please-merge-back-poc/commit/72334dd4f71fc1c2f69b13ae7152afb7a92e8552))
+* show the release notes for the deployed version ([1547079](https://github.com/omarelweshy/release-please-merge-back-poc/commit/1547079f1aba883ea12a69f69151d8a244d01809))
+
 ## [0.3.0](https://github.com/omarelweshy/release-please-merge-back-poc/compare/v0.2.0...v0.3.0) (2026-09-13)
 
 
